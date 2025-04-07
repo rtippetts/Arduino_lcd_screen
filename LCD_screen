@@ -1,0 +1,218 @@
+#define UP_BUTTON 2
+#define DOWN_BUTTON 3
+#define SELECT_BUTTON 4
+#define BACK_BUTTON 5
+
+#include <Wire.h>
+#include <hd44780.h>
+#include <hd44780ioClass/hd44780_I2Cexp.h>
+#include <WiFi101.h>           // WiFi library for MKR WiFi 1010
+#include <HTTPClient.h>        // HTTPClient library for making HTTP requests
+
+hd44780_I2Cexp lcd;
+
+const int LCD_COLS = 16;
+const int LCD_ROWS = 2;
+
+const char* ssid = "iPhone";           // Your WiFi SSID
+const char* password = "Banana16";   // Your WiFi password
+
+const String SUPABASE_URL = "https://etzkrccrbqsebaomjfts.supabase.co";
+const String SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV0emtyY2NyYnFzZWJhb21qZnRzIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc0MzgwNzU2MywiZXhwIjoyMDU5MzgzNTYzfQ.aVmLeaNGZz5bjitMWJcEoOeZYANdQnk1JiLoQ1JUHBQ";
+
+// Initialize tank names
+const char* tanks[10] = { "Tank 1", "Aquarium 2", "Aquapond 3", "Water 4", "Nemo 5",
+                          "Beta 6", "WaterBox 7", "Fish Bowl 8", "Jar 9", "Bowl 10" };
+
+int topTankIndex = 0;
+int selectedTankIndex = 0;
+bool inMeasurementScreen = false;
+bool measureSelected = false;
+
+WiFiClient wifiClient;
+HTTPClient http;
+
+// Function to connect to WiFi
+void setupWiFi() {
+  Serial.begin(115200);
+  while (WiFi.status() != WL_CONNECTED) {
+    WiFi.begin(ssid, password);
+    Serial.print(".");
+    delay(5000);
+  }
+  Serial.println("Connected to WiFi!");
+}
+
+// Function to send measurements to Supabase
+void sendMeasurementToSupabase(String tankName, float pH, int tds, float temp) {
+  String url = SUPABASE_URL + "/rest/v1/measurements";
+  
+  http.begin(url);
+  http.addHeader("Authorization", "Bearer " + SUPABASE_KEY);
+  http.addHeader("Content-Type", "application/json");
+
+  String payload = "{\"tank_name\": \"" + tankName + "\", \"pH\": " + String(pH) + ", \"tds\": " + String(tds) + ", \"temp\": " + String(temp) + "}";
+
+  int httpResponseCode = http.POST(payload);
+  
+  if (httpResponseCode > 0) {
+    Serial.println("Data sent successfully!");
+    Serial.println(httpResponseCode); // Response code
+  } else {
+    Serial.println("Error sending data: " + String(httpResponseCode));
+  }
+
+  http.end(); // Free resources
+}
+
+void setup() {
+  lcd.begin(LCD_COLS, LCD_ROWS);
+  lcd.clear();
+
+  pinMode(UP_BUTTON, INPUT);
+  pinMode(DOWN_BUTTON, INPUT);
+  pinMode(SELECT_BUTTON, INPUT);
+  pinMode(BACK_BUTTON, INPUT);
+
+  updateLCD();
+
+  // Connect to Wi-Fi
+  setupWiFi();
+}
+
+void loop() {
+  static unsigned long lastButtonPress = 0;
+  const unsigned long debounceDelay = 200;
+
+  if (millis() - lastButtonPress < debounceDelay) return;
+
+  if (!inMeasurementScreen) { 
+    if (digitalRead(UP_BUTTON) == HIGH) {
+      if (selectedTankIndex > 0) {
+        selectedTankIndex--;
+        if (selectedTankIndex < topTankIndex) topTankIndex--;
+        updateLCD();
+      }
+      lastButtonPress = millis();
+    }
+
+    if (digitalRead(DOWN_BUTTON) == HIGH) {
+      if (selectedTankIndex < 9) {
+        selectedTankIndex++;
+        if (selectedTankIndex > topTankIndex + 1) topTankIndex++;
+        updateLCD();
+      }
+      lastButtonPress = millis();
+    }
+
+    if (digitalRead(SELECT_BUTTON) == HIGH) {
+      inMeasurementScreen = true;
+      measureSelected = false;
+      updateMeasurementScreen();
+      lastButtonPress = millis();
+    }
+  } 
+  else {  
+    if (digitalRead(UP_BUTTON) == HIGH || digitalRead(DOWN_BUTTON) == HIGH) {
+      measureSelected = !measureSelected;
+      updateMeasurementScreen();
+      lastButtonPress = millis();
+    }
+
+    if (digitalRead(SELECT_BUTTON) == HIGH) {
+      if (measureSelected) {
+        startMeasurement();
+      }
+      lastButtonPress = millis();
+    }
+
+    if (digitalRead(BACK_BUTTON) == HIGH) {
+      inMeasurementScreen = false;
+      updateLCD();
+      lastButtonPress = millis();
+    }
+  }
+}
+
+void updateLCD() {
+  lcd.clear();
+  
+  lcd.setCursor(0, 0);
+  if (selectedTankIndex == topTankIndex) {
+    lcd.print("[> "); lcd.print(tanks[topTankIndex]); lcd.print(" <]");
+  } else {
+    lcd.print("   "); lcd.print(tanks[topTankIndex]);
+  }
+
+  lcd.setCursor(0, 1);
+  if (selectedTankIndex == topTankIndex + 1) {
+    lcd.print("[> "); lcd.print(tanks[topTankIndex + 1]); lcd.print(" <]");
+  } else {
+    lcd.print("   "); lcd.print(tanks[topTankIndex + 1]);
+  }
+}
+
+void updateMeasurementScreen() {
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  if (!measureSelected) {
+    lcd.print("[> "); lcd.print(tanks[selectedTankIndex]); lcd.print(" <]");
+  } else {
+    lcd.print("   "); lcd.print(tanks[selectedTankIndex]);
+  }
+
+  lcd.setCursor(0, 1);
+  if (measureSelected) {
+    lcd.print("[> Measure? <]");
+  } else {
+    lcd.print("   Measure?");
+  }
+}
+
+void startMeasurement() {
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Measuring...");
+
+  // Optional: Show a simple progress bar
+  int totalBlocks = 10;
+  int delayTime = 300;
+  for (int i = 0; i <= totalBlocks; i++) {
+    lcd.setCursor(0, 1);
+    for (int j = 0; j < i; j++) {
+      lcd.print((char)255);  // Full block character
+    }
+    delay(delayTime);
+  }
+
+  // === Simulated sensor values ===
+  float pH = random(600, 800) / 100.0;      // pH: 6.00 to 8.00
+  int tds = random(300, 900);               // TDS: 300 to 900 ppm
+  float temp = random(200, 300) / 10.0;     // Temp: 20.0°C to 30.0°C
+
+  // === Display results ===
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("pH:");
+  lcd.print(pH, 2);
+  lcd.print(" TDS:");
+  lcd.print(tds, 0);
+
+  lcd.setCursor(0, 1);
+  lcd.print("Temp:");
+  lcd.print(temp, 1);
+  lcd.print((char)223); // degree symbol
+  lcd.print("C");
+
+  // Send measurement to Supabase
+  sendMeasurementToSupabase(tanks[selectedTankIndex], pH, tds, temp);
+
+  // Wait until the Back button is pressed to return to the main menu
+  while (digitalRead(BACK_BUTTON) == LOW) {
+    // Do nothing; just wait for the Back button to be pressed
+  }
+
+  // Once the Back button is pressed, return to the main menu
+  inMeasurementScreen = false;
+  updateLCD();
+}
